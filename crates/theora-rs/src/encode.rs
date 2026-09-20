@@ -413,3 +413,5 @@ pub fn oc_img_plane_copy_pad(dst: &mut ImgPlane, src: &ImgPlane) {
         }
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

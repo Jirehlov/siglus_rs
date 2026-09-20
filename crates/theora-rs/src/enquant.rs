@@ -276,3 +276,5 @@ pub fn oc_quant_params_pack(writer: &mut crate::packet::PackWriter, qinfo: &Quan
         }
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

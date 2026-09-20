@@ -15,6 +15,8 @@
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::fs;
+#[cfg(target_os = "horizon")]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use std::path::Component;
@@ -59,7 +61,31 @@ pub fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
     crate::wasm_vfs::WasmDirectoryVfs::new().read_all(&path_to_wasm_vfs(path))
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(target_os = "horizon")]
+pub fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
+    let Some(resolved) = resolve_windows_case_insensitive_file(path)? else {
+        bail!("file not found: {}", path.display());
+    };
+    // std::fs::read preallocates from metadata().len(). fsdev currently
+    // reports an invalid size through the custom Horizon std target, turning
+    // even a small key.toml into a bogus OOM. Read incrementally instead.
+    let mut file = fs::File::open(&resolved)?;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    Ok(bytes)
+}
+
+#[cfg(all(
+    not(target_os = "horizon"),
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
     let Some(resolved) = resolve_windows_case_insensitive_file(path)? else {
         bail!("file not found: {}", path.display());
@@ -442,7 +468,19 @@ pub(crate) fn resolve_windows_case_insensitive_file(path: &Path) -> Result<Optio
         return Ok(wasm_path_is_file(path).then_some(path.to_path_buf()));
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    // libnx's fsdev mount accepts `sdmc:` paths through open(2), but this
+    // custom Horizon std target currently reports false from metadata/is_file
+    // for those same paths. Verify the exact shipped filename by opening it;
+    // desktop targets retain the case-insensitive directory resolver below.
+    #[cfg(target_os = "horizon")]
+    {
+        return Ok(std::fs::File::open(path).ok().map(|_| path.to_path_buf()));
+    }
+
+    #[cfg(all(
+        not(target_os = "horizon"),
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     {
         if let Some(cached) = positive_file_cache_get(path) {
             return Ok(Some(cached));
@@ -630,6 +668,22 @@ fn resolve_project_exe_key(project_dir: &Path) -> Option<[u8; 16]> {
         }
     };
 
+    // Resource-only key recovery retains several large Scene.pck working
+    // buffers. On Horizon it is both unsuitable for the constrained startup
+    // heap and unnecessary for a packaged game that provides key.toml. Trust
+    // that explicit key; without one, let the normal decoder report a concrete
+    // encrypted-resource error rather than attempting a high-memory crack.
+    #[cfg(target_os = "horizon")]
+    {
+        if configured_key.is_none() {
+            log::warn!(
+                "no key.toml EXE key under {}; automatic key recovery is disabled on Horizon",
+                project_dir.display()
+            );
+        }
+        return cache_project_exe_key(project_dir, configured_key);
+    }
+
     let game_path = match find_initial_gameexe_path(project_dir) {
         Ok(path) => path,
         Err(err) => {
@@ -700,7 +754,7 @@ fn resolve_project_exe_key(project_dir: &Path) -> Option<[u8; 16]> {
     if let Some(key) = configured_key {
         match siglus_key_recovery::check_key(&game, &scene, &key) {
             Ok(siglus_key_recovery::KeyStatus::Accepted) => {
-                return cache_project_exe_key(project_dir, Some(key))
+                return cache_project_exe_key(project_dir, Some(key));
             }
             Ok(siglus_key_recovery::KeyStatus::Unverifiable) => {
                 // Easy-link packs keep their scene chunks uncompressed, so no
@@ -796,12 +850,22 @@ fn resolve_project_exe_key(project_dir: &Path) -> Option<[u8; 16]> {
 pub fn load_scene_pck_decode_options(
     project_dir: &Path,
 ) -> Result<siglus_assets::scene_pck::ScenePckDecodeOptions> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        target_os = "horizon"
+    ))]
     {
+        // Horizon must not enter the desktop resource-key recovery path: it
+        // retains large Scene.pck working buffers before the pack itself is
+        // loaded. `key.toml` is included with the deployment bundle and the
+        // assets crate now opens that exact file directly on fsdev mounts.
         return siglus_assets::scene_pck::ScenePckDecodeOptions::from_project_dir(project_dir);
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(all(
+        not(target_os = "horizon"),
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     {
         let string_encryption_override = load_project_key_toml(project_dir)?
             .map(|cfg| cfg.override_string_encryption)

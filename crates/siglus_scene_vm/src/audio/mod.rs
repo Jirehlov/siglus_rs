@@ -4,6 +4,8 @@ pub mod bgm;
 pub mod engine;
 pub mod jitan;
 pub mod kira_hub;
+#[cfg(target_os = "horizon")]
+pub mod switch_backend;
 pub mod sfx_engine;
 
 pub use engine::{

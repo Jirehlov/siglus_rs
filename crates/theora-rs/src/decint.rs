@@ -101,3 +101,5 @@ impl Default for DecContext {
         }
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

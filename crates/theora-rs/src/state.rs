@@ -1120,3 +1120,5 @@ pub fn oc_state_dump_frame(state: &TheoraState) -> String {
         state.nmbs
     )
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::{string::String, vec::Vec};

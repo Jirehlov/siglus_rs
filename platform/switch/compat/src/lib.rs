@@ -3,29 +3,7 @@
 #![no_std]
 extern crate alloc;
 
-pub mod io {
-    use alloc::string::String;
-    use core::fmt;
-
-    #[derive(Debug)]
-    pub struct Error(String);
-
-    impl Error {
-        pub fn new(msg: String) -> Self {
-            Self(msg)
-        }
-    }
-
-    impl fmt::Display for Error {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(&self.0)
-        }
-    }
-
-    impl core::error::Error for Error {}
-
-    pub type Result<T, E = Error> = core::result::Result<T, E>;
-}
+pub use siglus_switch_std::io;
 
 pub mod path {
     use alloc::string::String;
@@ -73,16 +51,15 @@ pub mod path {
 }
 
 pub mod fs {
-    use crate::io::Error;
+    use crate::io::{Error, ErrorKind};
     use crate::path::Path;
-    use alloc::format;
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
     use nx::fs::FileOpenOption;
 
-    fn ioerr(e: impl core::fmt::Debug) -> Error {
-        Error::new(format!("{e:?}"))
+    fn ioerr(_e: impl core::fmt::Debug) -> Error {
+        Error::from(ErrorKind::Other)
     }
 
     pub fn read(path: &Path) -> Result<Vec<u8>, Error> {
@@ -103,8 +80,45 @@ pub mod fs {
 
     pub fn read_to_string(path: &Path) -> Result<String, Error> {
         let bytes = read(path)?;
-        String::from_utf8(bytes).map_err(|e| Error::new(format!("utf8: {e}")))
+        String::from_utf8(bytes).map_err(|_| Error::from(ErrorKind::InvalidData))
     }
 }
 
 pub use core::str;
+
+pub mod collections {
+    pub use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    pub mod btree_map {
+        pub use alloc::collections::btree_map::*;
+    }
+}
+
+pub use core::cmp;
+pub use core::fmt;
+
+// ---- facade modules mirroring the std paths engine code imports ----
+pub mod error {
+    pub use core::error::Error;
+}
+pub mod boxed {
+    pub use alloc::boxed::Box;
+}
+pub mod string {
+    pub use alloc::string::{String, ToString};
+}
+pub mod vec {
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+}
+pub mod borrow {
+    pub use alloc::borrow::{Borrow, Cow, ToOwned};
+}
+pub use core::array;
+pub use core::mem;
+pub use core::result;
+pub use core::time;
+
+pub mod sync {
+    pub use alloc::sync::Arc;
+}

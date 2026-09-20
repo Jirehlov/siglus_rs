@@ -258,3 +258,5 @@ pub fn oc_enc_tokenize_finish(log: &mut TokenLog<'_>) {
         }
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

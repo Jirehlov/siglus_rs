@@ -289,3 +289,5 @@ mod tests {
         assert_eq!(huff_token_decode_c(&mut pb, &tree), 9);
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

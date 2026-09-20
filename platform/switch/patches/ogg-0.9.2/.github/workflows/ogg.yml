@@ -1,0 +1,41 @@
+name: ogg
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    strategy:
+      matrix:
+        os: [macOS-latest, ubuntu-latest, windows-latest]
+        toolchain: [stable, beta, 1.61]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@master
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.toolchain }}
+        override: true
+    - name: Run no-default-features builds
+      if: matrix.toolchain != '1.61'
+      run: |
+        cargo test --verbose --no-default-features
+        cargo doc --verbose --no-default-features
+    - name: Downgrade dependencies to comply with MSRV
+      if: matrix.toolchain == '1.61'
+      run: cargo update -p tokio --precise 1.29.1
+    - name: Run no-default-features builds (forbidding warnings)
+      if: matrix.toolchain == '1.61'
+      env:
+        RUSTFLAGS: -D warnings
+      run: |
+        cargo test --verbose --no-default-features
+        cargo doc --verbose --no-default-features
+    - name: Run all-features builds
+      if: matrix.toolchain != '1.61'
+      run: |
+        cargo test --verbose --all-features
+        cargo doc --verbose --all-features

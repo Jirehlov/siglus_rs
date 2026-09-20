@@ -57,3 +57,5 @@ pub fn oc_ycbcr_buffer_flip(dst: &mut YCbCrBuffer, src: &YCbCrBuffer) {
         };
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

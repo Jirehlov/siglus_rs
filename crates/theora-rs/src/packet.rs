@@ -118,3 +118,5 @@ mod tests {
         assert_eq!(w.finish(), vec![0b1010_0111]);
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

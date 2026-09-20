@@ -2148,3 +2148,5 @@ pub fn th_decode_ycbcr_out(ctx: &DecContext) -> Result<YCbCrBuffer> {
     crate::internal::oc_ycbcr_buffer_flip(&mut ycbcr, &ctx.state.ref_frame_bufs[self_idx as usize]);
     Ok(ycbcr)
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

@@ -277,3 +277,5 @@ pub fn th_encode_ycbcr_in(enc: &mut EncoderContext, ycbcr: &YCbCrBuffer) -> Resu
 pub fn th_encode_packetout(enc: &mut EncoderContext, last: bool) -> Result<Option<OggPacket>> {
     enc.packetout(last)
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::string::{String, ToString};

@@ -31,6 +31,20 @@ use crate::vm::{SceneVm, VmConfig};
 
 const FRAME_INTERVAL_MS: u32 = 16;
 
+// The Switch shell can persist these markers even when a startup abort occurs
+// before Rust's normal stderr is usable. Keep the instrumentation out of every
+// other target and at the actual fallible/allocation boundaries.
+#[cfg(target_os = "horizon")]
+macro_rules! switch_startup_marker {
+    ($message:expr) => {
+        crate::switch_host::report_switch_marker($message)
+    };
+}
+#[cfg(not(target_os = "horizon"))]
+macro_rules! switch_startup_marker {
+    ($message:expr) => {};
+}
+
 #[derive(Debug, Clone)]
 pub struct SiglusHostConfig {
     pub project_dir: PathBuf,
@@ -225,14 +239,26 @@ fn load_scene_pck_decode_options(project_dir: &Path) -> Result<ScenePckDecodeOpt
 
 impl SiglusHost {
     pub async fn new_with_renderer(config: SiglusHostConfig, renderer: Renderer) -> Result<Self> {
+        Self::new_with_renderer_sync(config, renderer)
+    }
+
+    /// Synchronous constructor for native hosts which own their event loop and
+    /// do not use a desktop async executor (Horizon/libnx in particular).
+    pub fn new_with_renderer_sync(config: SiglusHostConfig, renderer: Renderer) -> Result<Self> {
+        switch_startup_marker!(b"siglus_switch: host initial-size begin\n\0");
         let initial_size = Self::resolve_initial_size(&config);
+        switch_startup_marker!(b"siglus_switch: host initial-size complete\n\0");
+        switch_startup_marker!(b"siglus_switch: host boot-config begin\n\0");
         let boot = Self::resolve_boot_config(&config);
+        switch_startup_marker!(b"siglus_switch: host boot-config complete\n\0");
         let mut flow = ProcFlow::default();
         flow.push(ProcType::Script, 0);
         flow.push(ProcType::StartWarning, 0);
-        let chihaya_display_adapter_name = renderer.adapter.get_info().name;
+        let chihaya_display_adapter_name = renderer.adapter_name();
         let renderer = Rc::new(RefCell::new(renderer));
+        switch_startup_marker!(b"siglus_switch: host vm-init begin\n\0");
         let mut vm = Self::init_vm(&config, &boot, initial_size)?;
+        switch_startup_marker!(b"siglus_switch: host vm-init complete\n\0");
         vm.ctx.globals.system.chihaya_display_adapter_name = chihaya_display_adapter_name;
         let capture_backend: FrameCaptureBackendRef = renderer.clone();
         vm.ctx.set_frame_capture_backend(Some(capture_backend));
@@ -430,6 +456,21 @@ impl SiglusHost {
         self.script_needs_pump = true;
     }
 
+    /// Record a native controller edge without converting it into keyboard
+    /// activity. Platform backends may additionally send a compatibility key,
+    /// but should call this last so JOYPAD remains the active input family.
+    pub fn joypad_button(&mut self, button: usize, down: bool) {
+        if self.native_messagebox_pending() {
+            return;
+        }
+        if down {
+            self.vm.ctx.script_input.on_joypad_key_down(button);
+        } else {
+            self.vm.ctx.script_input.on_joypad_key_up(button);
+        }
+        self.script_needs_pump = true;
+    }
+
     pub fn key_up_code(&mut self, code: i32) {
         if let Some(key) = vm_key_from_platform_code(code) {
             self.key_up(key);
@@ -592,8 +633,11 @@ impl SiglusHost {
         initial_size: (u32, u32),
     ) -> Result<SceneVm<'static>> {
         let project_dir = config.project_dir.clone();
+        switch_startup_marker!(b"siglus_switch: vm scene-pck-path begin\n\0");
         let scene_pck_path = find_scene_pck_for_host(&project_dir)?;
+        switch_startup_marker!(b"siglus_switch: vm scene-pck-path complete\n\0");
         let opt = load_scene_pck_decode_options(&project_dir)?;
+        switch_startup_marker!(b"siglus_switch: vm scene-pck-open begin\n\0");
         let pck = {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
@@ -608,6 +652,7 @@ impl SiglusHost {
                     .with_context(|| format!("open scene.pck: {}", scene_pck_path.display()))?
             }
         };
+        switch_startup_marker!(b"siglus_switch: vm scene-pck-open complete\n\0");
 
         let scene_no = if let Some(id) = config.scene_id {
             id
@@ -620,25 +665,35 @@ impl SiglusHost {
         let chunk = pck
             .scn_data_slice(scene_no)
             .with_context(|| format!("scene_id out of range: {}", scene_no))?;
+        switch_startup_marker!(b"siglus_switch: vm scene-stream begin\n\0");
         let owner: std::sync::Arc<[u8]> = std::sync::Arc::from(chunk.to_vec().into_boxed_slice());
         let mut stream = SceneStream::new_owned_with_string_codec(owner, pck.string_codec)?;
+        switch_startup_marker!(b"siglus_switch: vm scene-stream complete\n\0");
         let start_z = if config.scene_id.is_some() || config.scene_name.is_some() {
             0
         } else {
             boot.start_z
         };
         stream.jump_to_z_label(start_z.max(0) as usize)?;
+        switch_startup_marker!(b"siglus_switch: vm command-context begin\n\0");
         let mut ctx = CommandContext::new(project_dir);
+        switch_startup_marker!(b"siglus_switch: vm command-context complete\n\0");
         let active_append = ctx.globals.append_dir.clone();
+        switch_startup_marker!(b"siglus_switch: vm scene-metadata begin\n\0");
         ctx.install_scene_metadata(&active_append, &pck)?;
+        switch_startup_marker!(b"siglus_switch: vm scene-metadata complete\n\0");
         ctx.screen_w = initial_size.0;
         ctx.screen_h = initial_size.1;
+        switch_startup_marker!(b"siglus_switch: vm create begin\n\0");
         let mut vm = SceneVm::with_config(VmConfig::from_env(), stream, ctx);
+        switch_startup_marker!(b"siglus_switch: vm create complete\n\0");
         // C_tnm_eng::init_global() loads global/read/config save data before
         // start() calls tnm_init_local() and enters the boot scene.
         if config.scene_id.is_none() && config.scene_name.is_none() {
+            switch_startup_marker!(b"siglus_switch: vm global-save begin\n\0");
             crate::runtime::forms::syscom::load_global_save(&mut vm.ctx)
                 .context("load global save during engine initialization")?;
+            switch_startup_marker!(b"siglus_switch: vm global-save complete\n\0");
             if std::env::var_os("SG_BOOT_TRACE").is_some() {
                 let g1000 = vm
                     .ctx
@@ -652,11 +707,13 @@ impl SiglusHost {
             }
         }
         if config.scene_id.is_none() {
+            switch_startup_marker!(b"siglus_switch: vm restart-scene begin\n\0");
             let scene_name = config
                 .scene_name
                 .clone()
                 .unwrap_or_else(|| boot.start_scene.clone());
             vm.restart_scene_name(&scene_name, start_z)?;
+            switch_startup_marker!(b"siglus_switch: vm restart-scene complete\n\0");
         }
         Ok(vm)
     }
@@ -1485,6 +1542,24 @@ impl SiglusHost {
     }
 
     fn redraw(&mut self) -> Result<()> {
+        #[cfg(target_os = "horizon")]
+        let (switch_trace_frame, switch_trace_enabled) = {
+            // Per-phase tracing was useful while locating the title-screen
+            // stall, but it opened and appended to the SD log several times
+            // per frame. Keep the call sites available for future diagnosis
+            // without imposing that I/O on release gameplay.
+            (0_u32, false)
+        };
+        #[cfg(target_os = "horizon")]
+        if switch_trace_enabled {
+            let scene = self.vm.current_scene_name().map(str::to_owned);
+            let line = self.vm.current_line_no();
+            let blocked = self.vm.is_blocked();
+            crate::switch_host::report_switch_diagnostic(&format!(
+                "siglus_switch: host-trace frame={} phase=redraw-begin scene={:?} line={} blocked={}\n",
+                switch_trace_frame, scene, line, blocked,
+            ));
+        }
         if std::env::var_os("SG_PROC_FLOW_TRACE").is_some() {
             eprintln!(
                 "[SG_PROC_FLOW] host redraw start scene={:?} line={} flow={:?} pending_proc={:?}",
@@ -1499,7 +1574,21 @@ impl SiglusHost {
         // pump it here before tick_frame(), otherwise the redraw for the same input
         // can show stale pre-script object/event state for one frame.
         if self.script_needs_pump {
+            #[cfg(target_os = "horizon")]
+            if switch_trace_enabled {
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=pump-vm-begin\n",
+                    switch_trace_frame
+                ));
+            }
             self.pump_vm()?;
+            #[cfg(target_os = "horizon")]
+            if switch_trace_enabled {
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=pump-vm-complete\n",
+                    switch_trace_frame
+                ));
+            }
         }
         // eng_frame.cpp applies SCRIPT.SET_VSYNC_WAIT_OFF_FLAG after script
         // processing and before the frame is presented. Keep the VM flag as the
@@ -1508,7 +1597,21 @@ impl SiglusHost {
             .borrow_mut()
             .set_wait_display_vsync(!self.vm.ctx.globals.script.wait_display_vsync_off_flag);
         let wait_poll_needed = self.vm.ctx.wait.needs_runtime_poll();
+        #[cfg(target_os = "horizon")]
+        if switch_trace_enabled {
+            crate::switch_host::report_switch_diagnostic(&format!(
+                "siglus_switch: host-trace frame={} phase=tick-frame-begin\n",
+                switch_trace_frame
+            ));
+        }
         self.vm.tick_frame()?;
+        #[cfg(target_os = "horizon")]
+        if switch_trace_enabled {
+            crate::switch_host::report_switch_diagnostic(&format!(
+                "siglus_switch: host-trace frame={} phase=tick-frame-complete\n",
+                switch_trace_frame
+            ));
+        }
         if self.vm.take_runtime_load_completed() {
             self.finish_runtime_load();
             return Ok(());
@@ -1543,10 +1646,61 @@ impl SiglusHost {
             );
         }
         if !render_suppressed {
+            #[cfg(target_os = "horizon")]
+            if switch_trace_enabled {
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=frame-build-begin\n",
+                    switch_trace_frame
+                ));
+            }
             let frame = self.vm.ctx.render_frame_with_effects();
+            #[cfg(target_os = "horizon")]
+            if switch_trace_enabled {
+                let (wipe_type, wipe_progress, emote_count) = if let Some(wipe) = &frame.wipe {
+                    let emotes = wipe
+                        .under
+                        .iter()
+                        .chain(&wipe.current)
+                        .chain(&wipe.next)
+                        .chain(&wipe.over)
+                        .filter(|item| item.sprite.emote_render.is_some())
+                        .count();
+                    (wipe.wipe_type, wipe.progress, emotes)
+                } else {
+                    let emotes = frame
+                        .sprites
+                        .iter()
+                        .filter(|item| item.sprite.emote_render.is_some())
+                        .count();
+                    (-1, -1.0, emotes)
+                };
+                let movie = self.vm.ctx.movie.debug_memory_stats();
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=frame-build-complete sprites={} wipe-type={} wipe-progress={:.4} emotes={} movie-streams={} movie-frames={} movie-bytes={}\n",
+                    switch_trace_frame,
+                    frame.submitted_sprite_count(),
+                    wipe_type,
+                    wipe_progress,
+                    emote_count,
+                    movie.active_streams,
+                    movie.video_frames,
+                    movie.video_bytes,
+                ));
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=cpu-render-begin\n",
+                    switch_trace_frame
+                ));
+            }
             self.renderer
                 .borrow_mut()
                 .render_frame(&self.vm.ctx.images, &frame)?;
+            #[cfg(target_os = "horizon")]
+            if switch_trace_enabled {
+                crate::switch_host::report_switch_diagnostic(&format!(
+                    "siglus_switch: host-trace frame={} phase=cpu-render-complete\n",
+                    switch_trace_frame
+                ));
+            }
         }
         if self.script_resume_after_redraw {
             self.script_resume_after_redraw = false;

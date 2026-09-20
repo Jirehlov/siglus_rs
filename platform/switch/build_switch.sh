@@ -1,10 +1,11 @@
 #!/bin/sh
-# Switch build entry: builds the probe .nro from the vendored toolchain stack.
+# Switch build entry: builds the existing Rust engine plus its libnx/deko3d
+# Horizon shell.  It never selects winit or wgpu for this target.
 # Requires devkitPro (DEVKITPRO=/opt/devkitpro).
 set -e
 export DEVKITPRO=/opt/devkitpro
-export DEVKITARM=/opt/devkitpro/devkitA64
+export DEVKITA64=/opt/devkitpro/devkitA64
 export PATH="/opt/devkitpro/devkitA64/bin:/opt/devkitpro/tools/bin:$PATH"
-cd "$(dirname "$0")/probe"
-cargo nx build "$@"
-ls -la target/aarch64-nintendo-switch-freestanding/*/siglus_switch_probe.nro
+cd "$(dirname "$0")/runtime"
+make "$@"
+ls -lh siglus_switch.nro

@@ -23,6 +23,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,6 +60,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+dependencies = [
+ "siglus_switch_std",
 ]
 
 [[package]]
@@ -102,6 +115,16 @@ name = "gimli"
 version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
+
+[[package]]
+name = "lewton"
+version = "0.10.2"
+dependencies = [
+ "byteorder",
+ "ogg",
+ "siglus_switch_compat",
+ "tinyvec",
+]
 
 [[package]]
 name = "libm"
@@ -184,6 +207,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg"
+version = "0.9.2"
+dependencies = [
+ "byteorder",
+ "siglus_switch_compat",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -223,11 +254,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "siglus_switch_window"
+name = "siglus_omv_decoder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lewton",
+ "ogg",
+ "siglus_switch_compat",
+ "theora-rs",
+]
+
+[[package]]
+name = "siglus_switch"
 version = "0.1.0"
 dependencies = [
  "nx",
+ "siglus_omv_decoder",
 ]
+
+[[package]]
+name = "siglus_switch_compat"
+version = "0.1.0"
+dependencies = [
+ "nx",
+ "siglus_switch_std",
+]
+
+[[package]]
+name = "siglus_switch_std"
+version = "0.1.0"
 
 [[package]]
 name = "spinning_top"
@@ -254,6 +309,19 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "theora-rs"
+version = "0.1.0"
+dependencies = [
+ "siglus_switch_compat",
+]
+
+[[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "ttf-parser"

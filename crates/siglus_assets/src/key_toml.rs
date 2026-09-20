@@ -1,4 +1,6 @@
 use std::fs::{self, OpenOptions};
+#[cfg(target_os = "horizon")]
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +10,17 @@ use crate::angou::{self, AngouStepKind};
 
 fn find_case_insensitive_child(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
     let exact = parent.join(name);
+
+    // libnx fsdev accepts sdmc:/ paths through open(2), but metadata/is_file
+    // can report false for the same file on the custom Horizon std target.
+    // The shipped key.toml filename is exact, so verify it by opening it and
+    // avoid a directory scan that would otherwise hide the configured key.
+    #[cfg(target_os = "horizon")]
+    {
+        return Ok(fs::File::open(&exact).ok().map(|_| exact));
+    }
+
+    #[cfg(not(target_os = "horizon"))]
     if exact.is_file() {
         return Ok(Some(exact));
     }
@@ -64,8 +77,33 @@ pub fn load_emote_key_from_project_dir(project_dir: &Path) -> Result<Option<u32>
 }
 
 pub fn load_emote_key_from_file(path: &Path) -> Result<Option<u32>> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = read_key_toml_text(path)?;
     parse_emote_key_toml(&text)
+}
+
+fn read_key_toml_text(path: &Path) -> Result<String> {
+    #[cfg(target_os = "horizon")]
+    {
+        let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            let count = file
+                .read(&mut chunk)
+                .with_context(|| format!("read {}", path.display()))?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        return String::from_utf8(bytes)
+            .with_context(|| format!("decode UTF-8 {}", path.display()));
+    }
+
+    #[cfg(not(target_os = "horizon"))]
+    {
+        fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
+    }
 }
 
 pub fn parse_emote_key_toml(text: &str) -> Result<Option<u32>> {
@@ -73,7 +111,7 @@ pub fn parse_emote_key_toml(text: &str) -> Result<Option<u32>> {
 }
 
 pub fn load_key16_from_file(path: &Path) -> Result<Option<[u8; 16]>> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = read_key_toml_text(path)?;
     parse_key16_toml(&text)
 }
 
@@ -123,7 +161,7 @@ pub fn load_key_toml_from_project_dir(project_dir: &Path) -> Result<Option<KeyTo
 }
 
 pub fn load_key_toml_from_file(path: &Path) -> Result<KeyTomlConfig> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = read_key_toml_text(path)?;
     parse_key_toml(&text)
 }
 

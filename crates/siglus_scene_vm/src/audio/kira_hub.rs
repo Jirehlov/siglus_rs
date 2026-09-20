@@ -2,7 +2,11 @@ use std::fmt;
 
 use anyhow::{Context, Result, anyhow};
 use kira::Volume;
-use kira::manager::{AudioManager, AudioManagerSettings, backend::DefaultBackend};
+use kira::manager::{AudioManager, AudioManagerSettings};
+#[cfg(not(target_os = "horizon"))]
+use kira::manager::backend::DefaultBackend as PlatformBackend;
+#[cfg(target_os = "horizon")]
+use super::switch_backend::SwitchBackend as PlatformBackend;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
@@ -23,7 +27,7 @@ pub enum TrackKind {
 /// Kira 0.9 uses `AudioManager::play` plus `StaticSoundData::output_destination(&track)`.
 /// We keep one sub-track per Siglus category (BGM/SE/PCM).
 pub struct AudioHub {
-    manager: Option<AudioManager<DefaultBackend>>,
+    manager: Option<AudioManager<PlatformBackend>>,
     bgm: Option<TrackHandle>,
     se: Option<TrackHandle>,
     pcm: Option<TrackHandle>,
@@ -57,7 +61,7 @@ impl Default for AudioHub {
 
 impl AudioHub {
     pub fn new() -> Self {
-        match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+        match AudioManager::<PlatformBackend>::new(AudioManagerSettings::default()) {
             Ok(mut manager) => {
                 let bgm = manager.add_sub_track(TrackBuilder::default()).ok();
                 let se = manager.add_sub_track(TrackBuilder::default()).ok();

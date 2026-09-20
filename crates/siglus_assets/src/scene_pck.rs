@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
@@ -443,9 +443,36 @@ fn resolve_scene_string_codec(
     }
 }
 
+fn read_scene_pck_bytes(path: &Path) -> Result<Vec<u8>> {
+    #[cfg(target_os = "horizon")]
+    {
+        // `std::fs::read` reserves metadata().len() up front. fsdev metadata
+        // is not reliable on this custom target, so read the pack in bounded
+        // chunks and grow the Vec from actual bytes received.
+        let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let count = file
+                .read(&mut chunk)
+                .with_context(|| format!("read {}", path.display()))?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        return Ok(bytes);
+    }
+
+    #[cfg(not(target_os = "horizon"))]
+    {
+        fs::read(path).with_context(|| format!("read {}", path.display()))
+    }
+}
+
 impl ScenePck {
     pub fn load_and_rebuild(path: &Path, opt: &ScenePckDecodeOptions) -> Result<Self> {
-        let tmp = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let tmp = read_scene_pck_bytes(path)?;
         Self::load_and_rebuild_from_bytes(tmp, opt)
     }
 

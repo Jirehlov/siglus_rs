@@ -213,3 +213,5 @@ mod tests {
         assert_eq!(err, TheoraError::BadHeader);
     }
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

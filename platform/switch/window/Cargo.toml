@@ -1,5 +1,5 @@
 [package]
-name = "siglus_switch_window"
+name = "siglus_switch"
 version = "0.1.0"
 edition = "2024"
 
@@ -12,7 +12,7 @@ nx = { path = "../patches/nx-0.6.0", features = ["services", "fs", "input", "fon
 unwinding = { path = "../patches/unwinding-0.2.10" }
 
 [package.metadata.nx.nro.nacp]
-default_name = "siglus_switch_window"
+default_name = "Siglus Switch"
 default_author = "siglus_rs"
 version = "0.1.0"
-application_id = "0x0100AAAAAAAABBBB"
+application_id = "0x0100A11C5EED0001"

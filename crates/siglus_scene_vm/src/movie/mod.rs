@@ -36,12 +36,27 @@ const MPEG2_STREAM_CHANNEL_CAPACITY: usize = 4;
 const MPEG2_STREAM_MAX_DRAIN_EVENTS: usize = 8;
 const MPEG2_STREAM_FRAME_KEEP: usize = 6;
 const MPEG2_STREAM_DECODE_LEAD_FRAMES: usize = 3;
+#[cfg(not(target_os = "horizon"))]
 const OMV_STREAM_CHANNEL_CAPACITY: usize = 12;
+#[cfg(target_os = "horizon")]
+const OMV_STREAM_CHANNEL_CAPACITY: usize = 4;
+#[cfg(not(target_os = "horizon"))]
 const OMV_STREAM_MAX_DRAIN_EVENTS: usize = 16;
+#[cfg(target_os = "horizon")]
+const OMV_STREAM_MAX_DRAIN_EVENTS: usize = 8;
+#[cfg(not(target_os = "horizon"))]
 const OMV_STREAM_FRAME_KEEP: usize = 16;
+#[cfg(target_os = "horizon")]
+const OMV_STREAM_FRAME_KEEP: usize = 6;
 const OMV_STREAM_DECODE_LEAD_FRAMES: usize = 4;
+#[cfg(not(target_os = "horizon"))]
 const OMV_LOOP_HEAD_CACHE_MAX_FRAMES: usize = 60;
+#[cfg(target_os = "horizon")]
+const OMV_LOOP_HEAD_CACHE_MAX_FRAMES: usize = 4;
+#[cfg(not(target_os = "horizon"))]
 const OMV_LOOP_HEAD_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(target_os = "horizon")]
+const OMV_LOOP_HEAD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const WMV_STREAM_CHANNEL_CAPACITY: usize = 8;
 const WMV_STREAM_MAX_DRAIN_EVENTS: usize = 16;
 const WMV_STREAM_FRAME_KEEP: usize = 12;
@@ -1241,6 +1256,8 @@ impl MovieManager {
         offset_ms: u64,
         loop_flag: bool,
     ) -> Result<u64> {
+        #[cfg(target_os = "horizon")]
+        crate::switch_host::report_switch_marker(b"siglus_switch: movie audio start begin\n\0");
         let local_offset_ms = offset_ms.saturating_sub(track.start_ms);
 
         // Kira 0.9 intentionally does not expose `sound::streaming` on wasm32.
@@ -1314,6 +1331,8 @@ impl MovieManager {
                 timeline_base_ms,
             },
         );
+        #[cfg(target_os = "horizon")]
+        crate::switch_host::report_switch_marker(b"siglus_switch: movie audio start complete\n\0");
         Ok(id)
     }
 

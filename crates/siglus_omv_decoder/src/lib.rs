@@ -1,11 +1,25 @@
+#![cfg_attr(all(target_os = "horizon", not(target_env = "newlib")), no_std)]
+
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+extern crate alloc;
+
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use siglus_switch_compat as std;
+
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::{format, string::String, vec, vec::Vec};
+
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(any(not(target_os = "horizon"), target_env = "newlib"))]
 use lewton::audio::{PreviousWindowRight, read_audio_packet_generic};
+#[cfg(any(not(target_os = "horizon"), target_env = "newlib"))]
 use lewton::header::{
     CommentHeader, SetupHeader, read_header_comment, read_header_ident, read_header_setup,
 };
+#[cfg(any(not(target_os = "horizon"), target_env = "newlib"))]
 use lewton::samples::InterleavedSamples;
 use ogg::reading::PacketReader;
 use theora_rs::{HeaderParser, OggPacket, PixelFmt};
@@ -331,6 +345,7 @@ impl TheoraFile {
         )
         .context("decode theora stream")?;
 
+        #[cfg(any(not(target_os = "horizon"), target_env = "newlib"))]
         let (has_audio_stream, audio_channels, audio_sample_rate, audio_samples) =
             if let Some(serial) = audio_serial {
                 let (channels, sample_rate, samples) = decode_vorbis_stream(
@@ -343,6 +358,14 @@ impl TheoraFile {
             } else {
                 (false, 0, 0, Vec::new())
             };
+
+        // Video playback remains functional while Switch audio is wired to a
+        // native output backend.  Do not link Lewton here: its desktop I/O
+        // surface is intentionally kept out of the no-std NRO dependency
+        // graph.
+        #[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+        let (has_audio_stream, audio_channels, audio_sample_rate, audio_samples) =
+            (false, 0, 0, Vec::new());
 
         Ok(Self {
             info,
@@ -608,6 +631,7 @@ fn copy_decoded_plane_tight(dst: &mut Vec<u8>, plane: &theora_rs::ImgPlane) -> R
     Ok(())
 }
 
+#[cfg(any(not(target_os = "horizon"), target_env = "newlib"))]
 fn decode_vorbis_stream(stream: &LogicalStream) -> Result<(i32, i32, Vec<f32>)> {
     if stream.packets.len() < 3 {
         bail!("vorbis stream does not contain enough header packets");

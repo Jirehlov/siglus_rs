@@ -1,3 +1,10 @@
 probe/target/
 window/target/
 compat/target/
+runtime/build/
+runtime/romfs/
+runtime/*.elf
+runtime/*.map
+runtime/*.nacp
+runtime/*.nro
+dist/

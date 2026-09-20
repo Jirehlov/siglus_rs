@@ -2000,6 +2000,13 @@ fn present_mode_for_wait_display_vsync(
 }
 
 impl Renderer {
+    /// Human-readable presentation adapter used by the VM's compatibility
+    /// variable. Platform renderers expose the same method without exposing
+    /// their native graphics object to the host.
+    pub fn adapter_name(&self) -> String {
+        self.adapter.get_info().name
+    }
+
     pub async fn new<W>(window: W) -> Result<Self>
     where
         W: std::ops::Deref<Target = dyn Window> + Into<wgpu::SurfaceTarget<'static>>,

@@ -231,3 +231,5 @@ pub struct LegacyTheoraInfo {
     pub sharpness: i32,
     pub pixelformat: PixelFmt,
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;

@@ -86,3 +86,5 @@ pub fn oc_quant_params_unpack(opb: &mut PackBuf<'_>, qinfo: &mut QuantInfo) -> R
 pub fn oc_quant_params_clear(qinfo: &mut QuantInfo) {
     qinfo.clear();
 }
+#[cfg(all(target_os = "horizon", not(target_env = "newlib")))]
+use alloc::vec::Vec;
