@@ -51,7 +51,6 @@ pub mod desktop_chihaya_bench;
 pub mod desktop_messagebox;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod desktop_twitter;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod host;
 #[cfg(target_os = "horizon")]
 pub mod switch_host;
