@@ -296,6 +296,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "avg32"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "bytemuck",
+ "chrono",
+ "clap",
+ "encoding_rs",
+ "kira",
+ "pollster",
+ "siglus_assets",
+ "wgpu 0.20.1",
+ "winit 0.31.0-beta.3",
+]
+
+[[package]]
 name = "az"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
