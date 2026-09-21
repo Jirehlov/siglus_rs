@@ -54,7 +54,10 @@ jobs:
 
       - name: Build workspace docs
         run: |
-          cargo doc --workspace --no-deps
+          cargo doc --workspace --no-deps \
+            --exclude siglus_switch_compat \
+            --exclude nx \
+            --exclude nx-derive
 
       - name: Install handwritten homepage
         run: |
