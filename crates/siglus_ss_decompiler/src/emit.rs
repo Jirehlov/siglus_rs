@@ -360,7 +360,7 @@ fn handle_instruction(
             ))
         }
         Op::Gosub { label, arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             state.stack.push(Expr::Gosub {
                 label: labels.label(*label),
                 args,
@@ -369,7 +369,7 @@ fn handle_instruction(
             None
         }
         Op::GosubStr { label, arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             state.stack.push(Expr::Gosub {
                 label: labels.label(*label),
                 args,
@@ -378,7 +378,7 @@ fn handle_instruction(
             None
         }
         Op::Return { arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             let rendered = args
                 .iter()
                 .map(|e| e.to_ss(symbols))
@@ -445,7 +445,7 @@ fn handle_instruction(
             ret_form,
             ..
         } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             let chain = pop_element_chain(state);
             let command = Expr::Command {
                 chain,
@@ -510,15 +510,18 @@ fn handle_instruction(
     }
 }
 
-fn pop_n_args(state: &mut VmModel, n: usize) -> Vec<Expr> {
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(
-            state
+fn pop_n_args(state: &mut VmModel, forms: &[ArgForm]) -> Vec<Expr> {
+    let mut out = Vec::with_capacity(forms.len());
+    for form in forms.iter().rev() {
+        out.push(match form {
+            ArgForm::Form(form) if !matches!(*form, FM_VOID | FM_INT | FM_STR | FM_LABEL) => {
+                Expr::Chain(pop_element_chain(state))
+            }
+            _ => state
                 .stack
                 .pop()
                 .unwrap_or_else(|| Expr::Raw("<arg-underflow>".to_string())),
-        );
+        });
     }
     out.reverse();
     out
@@ -996,7 +999,7 @@ fn handle_instruction_flat(
             })
         }
         Op::Gosub { label, arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             state.stack.push(Expr::Gosub {
                 label: labels.label(*label),
                 args,
@@ -1005,7 +1008,7 @@ fn handle_instruction_flat(
             None
         }
         Op::GosubStr { label, arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             state.stack.push(Expr::Gosub {
                 label: labels.label(*label),
                 args,
@@ -1014,7 +1017,7 @@ fn handle_instruction_flat(
             None
         }
         Op::Return { arg_forms } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             let rendered = args
                 .iter()
                 .map(|e| e.to_ss(symbols))
@@ -1081,7 +1084,7 @@ fn handle_instruction_flat(
             ret_form,
             ..
         } => {
-            let args = pop_n_args(state, arg_forms.len());
+            let args = pop_n_args(state, arg_forms);
             let chain = pop_element_chain(state);
             let command = Expr::Command {
                 chain,

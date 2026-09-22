@@ -8,6 +8,7 @@ pub const FM_INT: i32 = 10;
 pub const FM_INTLIST: i32 = 11;
 pub const FM_STR: i32 = 20;
 pub const FM_STRLIST: i32 = 21;
+pub const FM_LABEL: i32 = 30;
 pub const FM_LIST: i32 = -1;
 
 pub const CD_NONE: u8 = 0x00;
@@ -11331,12 +11332,6 @@ impl SymbolTables {
                     }
 
                     if i == 0 {
-                        if let Some(form) = self.form_by_value.get(v) {
-                            out.push(form.clone());
-                            parent = Some(form.clone());
-                            i += 1;
-                            continue;
-                        }
                         if let Some(def) = self.by_parent_code.get(&("global".to_string(), *v)) {
                             out.push(def.name.to_string());
                             if def.kind == "property" {
@@ -11344,6 +11339,12 @@ impl SymbolTables {
                             } else {
                                 parent = Some(def.parent.to_string());
                             }
+                            i += 1;
+                            continue;
+                        }
+                        if let Some(form) = self.form_by_value.get(v) {
+                            out.push(form.clone());
+                            parent = Some(form.clone());
                             i += 1;
                             continue;
                         }
