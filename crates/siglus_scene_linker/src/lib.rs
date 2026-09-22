@@ -185,7 +185,7 @@ pub fn link(
     let mut seen_scene_names = HashSet::new();
     let mut parsed = Vec::with_capacity(scenes.len());
     for scene in scenes {
-        let normalized = scene.name.to_lowercase();
+        let normalized = scene.name.to_ascii_lowercase();
         if normalized.is_empty() {
             bail!("scene name cannot be empty");
         }
@@ -226,7 +226,7 @@ pub fn link(
         }
     }
 
-    let scene_names: Vec<String> = scenes.iter().map(|s| s.name.to_lowercase()).collect();
+    let scene_names: Vec<String> = scenes.iter().map(|s| s.name.to_ascii_lowercase()).collect();
     let property_names: Vec<String> = definitions
         .properties
         .iter()

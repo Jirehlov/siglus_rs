@@ -906,7 +906,7 @@ impl<'a> Compiler<'a> {
         let mut spec_index = 0;
         for arg in &args[..positional_count] {
             let spec = overload.args.get(spec_index).context("argument overflow")?;
-            let need_value = spec.form != -3;
+            let need_value = matches!(spec.form, -2 | FM_LIST) || !is_reference(spec.form);
             let info = self.expression(&arg.value, need_value)?;
             let form = if spec.form == -2 {
                 deref(info.form)
@@ -938,7 +938,8 @@ impl<'a> Compiler<'a> {
                 .iter()
                 .find(|v| v.name.as_deref() == arg.name.as_deref())
                 .context("unknown named argument")?;
-            let info = self.expression(&arg.value, true)?;
+            let need_value = matches!(spec.form, -2 | FM_LIST) || !is_reference(spec.form);
+            let info = self.expression(&arg.value, need_value)?;
             emitted_forms.push(ExprInfo {
                 form: spec.form,
                 list_forms: info.list_forms,
