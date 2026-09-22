@@ -40,6 +40,29 @@ impl Avg32Renderer {
         &self.buffers
     }
 
+    pub(crate) fn buffer_clone(&self, index: u32) -> Result<Surface> {
+        self.buffers
+            .get(index as usize)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("AVG32 graphics buffer {index} is out of range"))
+    }
+
+    pub(crate) fn stretch_surface_to(
+        &mut self,
+        source: &Surface,
+        destination: u32,
+        source_rect: [i32; 4],
+        destination_rect: [i32; 4],
+    ) -> Result<()> {
+        self.buffers
+            .get_mut(destination as usize)
+            .ok_or_else(|| {
+                anyhow::anyhow!("AVG32 stretch destination buffer {destination} is out of range")
+            })?
+            .stretch_copy(source, source_rect, destination_rect);
+        Ok(())
+    }
+
     /// Applies deterministic graphics requests emitted by the VM. Effects are
     /// represented by their final composited frame here; time-based transition
     /// presentation is handled by a frontend scheduler.
@@ -54,6 +77,7 @@ impl Avg32Renderer {
                 name,
                 target,
                 effect,
+                direct_effect,
             } => {
                 // An empty AVG32 PDT name allocates a cleared working buffer.
                 // It occurs in AIR's transition scenes and is not a request for
@@ -75,18 +99,29 @@ impl Avg32Renderer {
                 // untouched for these names, then runs the transition from
                 // that buffer into the requested destination.
                 if matches!(name.as_str(), "?" | "*") {
-                    let source = self
-                        .buffers
-                        .get(1)
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("AVG32 working buffer 1 is out of range"))?;
+                    let source =
+                        self.buffers.get(1).cloned().ok_or_else(|| {
+                            anyhow::anyhow!("AVG32 working buffer 1 is out of range")
+                        })?;
                     if *target == 0 {
                         let display = self
                             .buffers
                             .get_mut(0)
                             .expect("display buffer is permanent");
                         display.clear([0, 0, 0, 0]);
-                        display.blit_full(&source, 0, 0);
+                        if let Some(effect) = direct_effect {
+                            display.blit(
+                                &source,
+                                effect.source_rect[0],
+                                effect.source_rect[1],
+                                effect.source_rect[2] - effect.source_rect[0] + 1,
+                                effect.source_rect[3] - effect.source_rect[1] + 1,
+                                effect.destination[0],
+                                effect.destination[1],
+                            );
+                        } else {
+                            display.blit_full(&source, 0, 0);
+                        }
                     } else {
                         self.buffers.insert(*target as usize, source)?;
                     }
@@ -100,17 +135,23 @@ impl Avg32Renderer {
                         .buffers
                         .get_mut(0)
                         .expect("display buffer is permanent");
-                    if let Some(effect) =
-                        effect.and_then(|index| config.effect(index.max(0) as usize))
+                    if let Some(effect) = direct_effect
+                        .as_ref()
+                        .map(|effect| (effect.source_rect, effect.destination))
+                        .or_else(|| {
+                            effect
+                                .and_then(|index| config.effect(index.max(0) as usize))
+                                .map(|effect| (effect.source_rect, effect.destination))
+                        })
                     {
                         display.blit(
                             &surface,
-                            effect.source_rect[0],
-                            effect.source_rect[1],
-                            effect.source_rect[2] - effect.source_rect[0] + 1,
-                            effect.source_rect[3] - effect.source_rect[1] + 1,
-                            effect.destination[0],
-                            effect.destination[1],
+                            effect.0[0],
+                            effect.0[1],
+                            effect.0[2] - effect.0[0] + 1,
+                            effect.0[3] - effect.0[1] + 1,
+                            effect.1[0],
+                            effect.1[1],
                         );
                     } else {
                         display.clear([0, 0, 0, 0]);
@@ -131,11 +172,11 @@ impl Avg32Renderer {
                 // PDT1 onto the display afterwards, not a script-chosen
                 // destination buffer.
                 let mut output = match base {
-                    GraphicSource::File(name) if matches!(name.as_str(), "?" | "*") => self
-                        .buffers
-                        .get(1)
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("AVG32 working buffer 1 is out of range"))?,
+                    GraphicSource::File(name) if matches!(name.as_str(), "?" | "*") => {
+                        self.buffers.get(1).cloned().ok_or_else(|| {
+                            anyhow::anyhow!("AVG32 working buffer 1 is out of range")
+                        })?
+                    }
                     GraphicSource::File(name) => {
                         Surface::from_pdt(decode_pdt(&resources.read("PDT", name)?).with_context(
                             || format!("failed to decode AVG32 composite base {name}"),
@@ -162,10 +203,9 @@ impl Avg32Renderer {
                         last_name
                     };
                     let mut source = if matches!(layer_name, "?" | "*") {
-                        self.buffers
-                            .get(1)
-                            .cloned()
-                            .ok_or_else(|| anyhow::anyhow!("AVG32 working buffer 1 is out of range"))?
+                        self.buffers.get(1).cloned().ok_or_else(|| {
+                            anyhow::anyhow!("AVG32 working buffer 1 is out of range")
+                        })?
                     } else {
                         Surface::from_pdt(decode_pdt(&resources.read("PDT", layer_name)?)?)
                     };
@@ -207,9 +247,12 @@ impl Avg32Renderer {
                     );
                 }
                 self.buffers.insert(1, output.clone())?;
-                let display = self.buffers.get_mut(0).expect("display buffer is permanent");
-                if let Some(effect) = composite_effect
-                    .and_then(|index| config.effect(index.max(0) as usize))
+                let display = self
+                    .buffers
+                    .get_mut(0)
+                    .expect("display buffer is permanent");
+                if let Some(effect) =
+                    composite_effect.and_then(|index| config.effect(index.max(0) as usize))
                 {
                     display.blit(
                         &output,
@@ -288,6 +331,77 @@ impl Avg32Renderer {
                     );
                 }
             }
+            VmAction::BufferDigits {
+                value,
+                source,
+                destination,
+                glyph_origin,
+                glyph_size,
+                glyph_stride,
+                destination_origin,
+                destination_stride,
+                count,
+                zero_padded,
+                masked,
+                color_key,
+            } => {
+                let source = self
+                    .buffers
+                    .get(*source as usize)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("AVG32 digit source buffer {source} is out of range")
+                    })?
+                    .clone();
+                let destination = self.buffers.get_mut(*destination as usize).ok_or_else(|| {
+                    anyhow::anyhow!("AVG32 digit destination buffer {destination} is out of range")
+                })?;
+                let mut remaining = *value;
+                // The native loop decrements before drawing, so a non-positive
+                // field count is a no-op and the rightmost cell gets units.
+                for cell in (0..(*count).max(0)).rev() {
+                    let digit = remaining.rem_euclid(10);
+                    let source_x = glyph_origin[0] + glyph_stride[0] * digit;
+                    let source_y = glyph_origin[1] + glyph_stride[1] * digit;
+                    let destination_x = destination_origin[0] + destination_stride[0] * cell;
+                    let destination_y = destination_origin[1] + destination_stride[1] * cell;
+                    if let Some(color_key) = color_key {
+                        destination.copy_rect_excluding_color(
+                            &source,
+                            source_x,
+                            source_y,
+                            glyph_size[0],
+                            glyph_size[1],
+                            destination_x,
+                            destination_y,
+                            [color_key[0] as u8, color_key[1] as u8, color_key[2] as u8],
+                        );
+                    } else if *masked {
+                        destination.blit(
+                            &source,
+                            source_x,
+                            source_y,
+                            glyph_size[0],
+                            glyph_size[1],
+                            destination_x,
+                            destination_y,
+                        );
+                    } else {
+                        destination.copy_rect(
+                            &source,
+                            source_x,
+                            source_y,
+                            glyph_size[0],
+                            glyph_size[1],
+                            destination_x,
+                            destination_y,
+                        );
+                    }
+                    remaining /= 10;
+                    if remaining == 0 && !zero_padded {
+                        break;
+                    }
+                }
+            }
             VmAction::BufferFill {
                 buffer,
                 rect,
@@ -318,7 +432,9 @@ impl Avg32Renderer {
             } => self
                 .buffers
                 .get_mut(*buffer as usize)
-                .ok_or_else(|| anyhow::anyhow!("AVG32 colour-mask buffer {buffer} is out of range"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("AVG32 colour-mask buffer {buffer} is out of range")
+                })?
                 .color_mask_rect(*rect, [color[0] as u8, color[1] as u8, color[2] as u8]),
             VmAction::BufferFade {
                 buffer,
@@ -351,10 +467,17 @@ impl Avg32Renderer {
                 self.buffers
                     .get_mut(*destination as usize)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("AVG32 stretch destination buffer {destination} is out of range")
+                        anyhow::anyhow!(
+                            "AVG32 stretch destination buffer {destination} is out of range"
+                        )
                     })?
                     .stretch_copy(&source, *source_rect, *destination_rect);
             }
+            // The runtime schedules individual `0x64:32` frames from an
+            // immutable source snapshot.  Keeping this arm side-effect free
+            // prevents a VM-only frontend from accidentally sampling a frame
+            // that was already overwritten by the destination surface.
+            VmAction::BufferStretchTween { .. } => {}
             VmAction::BufferScroll {
                 source,
                 destination,
@@ -368,7 +491,9 @@ impl Avg32Renderer {
                 self.buffers
                     .get_mut(*destination as usize)
                     .ok_or_else(|| {
-                        anyhow::anyhow!("AVG32 scroll destination buffer {destination} is out of range")
+                        anyhow::anyhow!(
+                            "AVG32 scroll destination buffer {destination} is out of range"
+                        )
                     })?
                     .copy_rect(
                         &source,
@@ -380,13 +505,10 @@ impl Avg32Renderer {
                         rect[1],
                     );
             }
-            VmAction::Fade {
-                color: Some(color), ..
-            } => self
-                .buffers
-                .get_mut(0)
-                .expect("display buffer is permanent")
-                .fade_to([color[0] as u8, color[1] as u8, color[2] as u8], 255),
+            // Handled by `runtime.rs`'s `FadePlayer`, which drives the real
+            // 16-phase ordered-dither transition over time via
+            // `fade_display_phase` instead of snapping instantly.
+            VmAction::Fade { .. } => {}
             _ => {}
         }
         Ok(())
@@ -401,6 +523,30 @@ impl Avg32Renderer {
             self.buffers
                 .insert(0, backup.clone())
                 .expect("display buffer is valid");
+        }
+    }
+
+    /// Paints one of AVG32's 4×4 ordered-dither fade passes.  `0x13` uses
+    /// the same phase table as `PDTMGR::ScreenFade`, so every pixel is touched
+    /// exactly once across the sixteen normal phases.
+    pub(crate) fn fade_display_phase(&mut self, color: [u8; 3], phase: usize, solid: bool) {
+        const X: [i32; 16] = [0, 2, 0, 2, 1, 3, 1, 3, 0, 2, 0, 2, 1, 3, 1, 3];
+        const Y: [i32; 16] = [0, 2, 2, 0, 1, 3, 3, 1, 1, 3, 3, 1, 0, 2, 2, 0];
+        let display = self
+            .buffers
+            .get_mut(0)
+            .expect("display buffer is permanent");
+        if solid {
+            display.clear([color[0], color[1], color[2], 255]);
+            return;
+        }
+        let phase = phase.min(15);
+        for y in (Y[phase]..AVG32_HEIGHT as i32).step_by(4) {
+            for x in (X[phase]..AVG32_WIDTH as i32).step_by(4) {
+                let at = (y as usize * AVG32_WIDTH as usize + x as usize) * 4;
+                display.pixels_mut()[at..at + 4]
+                    .copy_from_slice(&[color[0], color[1], color[2], 255]);
+            }
         }
     }
 

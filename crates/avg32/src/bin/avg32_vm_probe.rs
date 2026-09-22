@@ -50,7 +50,11 @@ fn main() -> Result<()> {
             };
             let mut input = Input::Skip;
             let mut error = None;
-            for _ in 0..1_024 {
+            // Auto-advances through every click-wait and always picks the
+            // first choice, so a sweep decodes as much of each scene's
+            // bytecode as it can reach in one deterministic pass instead of
+            // stopping at its first line of dialogue.
+            for _ in 0..200_000 {
                 let outcome = match vm.run(input, 4_096) {
                     Ok(outcome) => outcome,
                     Err(err) => {
@@ -72,8 +76,9 @@ fn main() -> Result<()> {
                     VmStop::Yield(VmAction::ChangeScene { .. }) => break,
                     VmStop::Yield(VmAction::LoadArea { .. }) => input = Input::None,
                     VmStop::Yield(VmAction::WaitForPointer | VmAction::WaitForInput { .. }) => {
-                        break;
+                        input = Input::Advance;
                     }
+                    VmStop::Yield(VmAction::Choice { .. }) => input = Input::Choice(0),
                     VmStop::Yield(VmAction::Wait { .. }) if skip_waits => input = Input::Skip,
                     VmStop::Yield(VmAction::Wait { .. }) => break,
                     VmStop::Yield(_) => input = Input::None,

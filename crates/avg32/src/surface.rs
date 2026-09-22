@@ -37,6 +37,19 @@ impl Surface {
         }
     }
 
+    /// Builds a surface from externally decoded RGBA8 pixels (e.g. an FMV
+    /// frame), validating the buffer is exactly `width * height * 4` bytes.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self> {
+        if rgba.len() != pixel_len(width, height)? {
+            bail!("avg32: RGBA buffer does not match {width}x{height}");
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -467,7 +480,14 @@ impl SurfaceBank {
                     let sy = sy1 + offset_y;
                     let dx = destination_xy[0] + offset_x;
                     let dy = destination_xy[1] + offset_y;
-                    if sx < 0 || sy < 0 || sx >= w || sy >= h || dx < 0 || dy < 0 || dx >= w || dy >= h
+                    if sx < 0
+                        || sy < 0
+                        || sx >= w
+                        || sy >= h
+                        || dx < 0
+                        || dy < 0
+                        || dx >= w
+                        || dy >= h
                     {
                         continue;
                     }
@@ -564,7 +584,9 @@ mod tests {
     fn every_buffer_is_addressable_before_any_write() {
         let bank = SurfaceBank::new().unwrap();
         for index in 0..AVG32_SURFACE_COUNT {
-            let surface = bank.get(index).expect("all fixed buffers are pre-allocated");
+            let surface = bank
+                .get(index)
+                .expect("all fixed buffers are pre-allocated");
             assert_eq!(surface.width(), AVG32_WIDTH);
             assert_eq!(surface.height(), AVG32_HEIGHT);
         }

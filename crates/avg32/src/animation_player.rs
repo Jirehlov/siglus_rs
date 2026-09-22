@@ -79,27 +79,41 @@ impl AnimationPlayer {
                 if *multi {
                     self.playing.extend(items);
                 } else {
-                    self.playing.retain(|playing| !playing.multi);
+                    // A new single animation replaces any single already in
+                    // flight; independently-looping multi animations keep
+                    // playing underneath it.
+                    self.playing.retain(|playing| playing.multi);
                     self.playing.extend(items);
                 }
             }
             VmAction::StopAnimation {
                 name,
-                scene,
+                scenes,
                 clear_all,
             } => {
                 if *clear_all {
                     self.playing.clear();
-                } else {
+                } else if let Some(name) = name {
+                    // Each listed scene stops that one item; an empty list
+                    // (no values before the bytecode's terminator) stops
+                    // nothing at all, matching the reference decoder.
                     self.playing.retain(|playing| {
-                        name.as_ref().is_some_and(|name| name != &playing.name)
-                            || scene.is_some_and(|scene| scene != playing.scene)
+                        playing.name != *name || !scenes.contains(&playing.scene)
                     });
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// A single (non-multi) `PlayAnimation` blocks scenario progress in the
+    /// original engine until it finishes (`SYSTEM::AnimationExec` gates the
+    /// whole decode loop while `anmflag` is set); a multi/`$30` animation
+    /// never does (`multianmflag` isn't checked by that gate at all). The
+    /// runtime uses this to decide whether to park the VM on a `Wait`.
+    pub fn single_active(&self) -> bool {
+        self.playing.iter().any(|playing| !playing.multi)
     }
 
     pub fn tick(&mut self, renderer: &mut Avg32Renderer) -> Result<()> {

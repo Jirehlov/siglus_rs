@@ -7,11 +7,13 @@
 
 pub mod animation;
 pub mod animation_player;
-pub mod ard;
 pub mod archive;
+pub mod ard;
 pub mod audio;
 pub mod config;
+pub mod ending;
 pub mod game;
+pub mod movie;
 pub mod pdt;
 pub mod render;
 pub mod resource;

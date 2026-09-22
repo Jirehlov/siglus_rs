@@ -10,7 +10,7 @@ use ab_glyph::{Font, FontVec, Glyph, PxScale, point};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -64,7 +64,12 @@ struct Args {
 /// `siglus_scene_vm`'s `aspect_fit_viewport` so both engines' desktop shells
 /// behave the same way under free window resizing instead of stretching the
 /// image to fill a non-4:3 window.
-fn aspect_fit_viewport(surface_w: u32, surface_h: u32, game_w: u32, game_h: u32) -> (u32, u32, u32, u32) {
+fn aspect_fit_viewport(
+    surface_w: u32,
+    surface_h: u32,
+    game_w: u32,
+    game_h: u32,
+) -> (u32, u32, u32, u32) {
     let surface_w = surface_w.max(1);
     let surface_h = surface_h.max(1);
     let game_w = game_w.max(1);
@@ -89,6 +94,7 @@ struct PlayerState {
     cursor: (f64, f64),
     text_font: Option<FontVec>,
     buffer_text: Vec<BufferText>,
+    choice: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,8 +107,13 @@ struct BufferText {
 
 impl PlayerState {
     async fn new(window: &'static dyn Window, root: PathBuf) -> Result<Self> {
-        let runtime = Avg32Runtime::open(&root)
+        let mut runtime = Avg32Runtime::open(&root)
             .with_context(|| format!("open AVG32 game at {}", root.display()))?;
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0);
+        runtime.seed_rng(seed);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -261,10 +272,14 @@ impl PlayerState {
             cursor: (0.0, 0.0),
             text_font: load_system_font(),
             buffer_text: Vec::new(),
+            choice: None,
         })
     }
 
     fn drive(&mut self, input: Input) -> Result<()> {
+        if matches!(input, Input::Choice(_)) {
+            self.choice = None;
+        }
         let mut input = input;
         for _ in 0..512 {
             let outcome = self.runtime.advance(input, 65_536)?;
@@ -298,6 +313,7 @@ impl PlayerState {
                 color: *color,
                 text: text.clone(),
             }),
+            VmAction::Choice { items, .. } => self.choice = Some(items.clone()),
             VmAction::ClearGraphicBuffers => self.buffer_text.retain(|item| item.buffer == 0),
             VmAction::CompositeGraphic { .. } => self
                 .buffer_text
@@ -360,6 +376,20 @@ impl PlayerState {
         Input::Pointer { x, y, button }
     }
 
+    fn choice_at_pointer(&self) -> Option<usize> {
+        let items = self.choice.as_ref()?;
+        let position = self.runtime.config().message_position();
+        let line_height = self.runtime.config().message_font_size()[1].max(1);
+        let Input::Pointer { x, y, .. } = self.pointer_input(0) else {
+            unreachable!("pointer_input always produces pointer input")
+        };
+        if x < position[0] || y < position[1] {
+            return None;
+        }
+        let index = ((y - position[1]) / line_height) as usize;
+        (index < items.len()).then_some(index)
+    }
+
     fn render(&mut self) -> Result<()> {
         self.runtime.tick()?;
         self.drive(Input::None)?;
@@ -384,6 +414,9 @@ impl PlayerState {
                     ],
                     self.runtime.config().message_font_size()[1].max(1),
                 );
+            }
+            if let Some(items) = &self.choice {
+                draw_choices(font, &mut pixels, items, self.runtime.config());
             }
         }
         self.queue.write_texture(
@@ -537,6 +570,31 @@ fn draw_text(
     }
 }
 
+fn draw_choices(
+    font: &FontVec,
+    pixels: &mut [u8],
+    items: &[String],
+    config: &avg32::config::Avg32Config,
+) {
+    let position = config.message_position();
+    let size = config.message_font_size()[1].max(1);
+    let color = config.color(0);
+    let baseline = font.ascent_unscaled() * size as f32;
+    for (index, item) in items.iter().enumerate() {
+        draw_text(
+            font,
+            pixels,
+            item,
+            [
+                position[0],
+                position[1] + baseline as i32 + size * index as i32,
+            ],
+            color,
+            size,
+        );
+    }
+}
+
 struct App {
     args: Args,
     window: Option<&'static dyn Window>,
@@ -557,14 +615,14 @@ impl ApplicationHandler for App {
                 // letterboxed into whatever size the player drags it to
                 // instead of being stretched (see `aspect_fit_viewport`).
                 .with_resizable(true)
-                .with_surface_size(LogicalSize::new(
-                    f64::from(AVG32_WIDTH * scale),
-                    f64::from(AVG32_HEIGHT * scale),
-                ))
-                .with_min_surface_size(LogicalSize::new(
-                    f64::from(AVG32_WIDTH / 4),
-                    f64::from(AVG32_HEIGHT / 4),
-                )),
+                // Physical (not logical) pixels: the requested size is the
+                // game's own 640x480 times the integer `--scale` factor,
+                // full stop. Using `LogicalSize` here would let the OS's
+                // HiDPI scale factor multiply the window again on top of
+                // that (e.g. a 2x scale on a 2x Retina display silently
+                // becoming a 4x window), which is never what `--scale` means.
+                .with_surface_size(PhysicalSize::new(AVG32_WIDTH * scale, AVG32_HEIGHT * scale))
+                .with_min_surface_size(PhysicalSize::new(AVG32_WIDTH / 4, AVG32_HEIGHT / 4)),
         ) {
             Ok(window) => window,
             Err(error) => {
@@ -632,9 +690,16 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 state.cursor = (position.x, position.y);
-                state.drive(
-                    state.pointer_input(button.mouse_button().map_or(0, |button| button as i32)),
-                )
+                let button = button.mouse_button().map_or(0, |button| button as i32);
+                if button != 0 {
+                    if let Some(choice) = state.choice_at_pointer() {
+                        state.drive(Input::Choice(choice))
+                    } else {
+                        state.drive(state.pointer_input(button))
+                    }
+                } else {
+                    state.drive(state.pointer_input(0))
+                }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
@@ -644,6 +709,24 @@ impl ApplicationHandler for App {
                     ) =>
             {
                 state.drive(Input::Advance)
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Digit1)) =>
+            {
+                state.drive(Input::Choice(0))
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Digit2)) =>
+            {
+                state.drive(Input::Choice(1))
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && matches!(event.physical_key, PhysicalKey::Code(KeyCode::Digit3)) =>
+            {
+                state.drive(Input::Choice(2))
             }
             WindowEvent::RedrawRequested => state.render(),
             _ => Ok(()),

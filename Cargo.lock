@@ -306,6 +306,7 @@ dependencies = [
  "clap",
  "encoding_rs",
  "kira",
+ "oxideav-cinepak",
  "pollster",
  "siglus_assets",
  "wgpu 0.20.1",
@@ -2633,6 +2634,12 @@ checksum = "4c60744c9688507efb6849b1bff197fb17e742b56f8a7f914129464bc86197ad"
 dependencies = [
  "oxideav-core",
 ]
+
+[[package]]
+name = "oxideav-cinepak"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "992a0ea3442dfa3a0ec893c117297f5dc76d50f19c8600853875896956618835"
 
 [[package]]
 name = "oxideav-core"

@@ -18,6 +18,8 @@ pub struct Effect {
 pub struct Avg32Config {
     effects: BTreeMap<usize, Effect>,
     colors: BTreeMap<i32, [u8; 3]>,
+    fade_colors: BTreeMap<i32, [u8; 3]>,
+    default_fade_microseconds: u32,
     message_position: [i32; 2],
     message_font_size: [i32; 2],
 }
@@ -26,6 +28,7 @@ impl Avg32Config {
     pub fn from_gameexe(gameexe: &GameexeConfig) -> Self {
         let mut effects = BTreeMap::new();
         let mut colors = BTreeMap::new();
+        let mut fade_colors = BTreeMap::new();
         for entry in &gameexe.entries {
             let Some(index) = entry.key_index("SEL") else {
                 continue;
@@ -43,7 +46,10 @@ impl Avg32Config {
                 Effect {
                     source_rect: [values[0], values[1], values[2], values[3]],
                     destination: [values[4], values[5]],
-                    step_microseconds: values[6].max(0) as u32,
+                    // AVG32 timers are millisecond-based.  The core uses
+                    // microseconds to retain sub-millisecond scheduler
+                    // precision, so convert at the resource boundary.
+                    step_microseconds: (values[6].max(0) as u32).saturating_mul(1_000),
                     command: values[7],
                     mask: values[8],
                     arguments: [
@@ -68,9 +74,31 @@ impl Avg32Config {
                 );
             }
         }
+        for entry in &gameexe.entries {
+            let Some(index) = entry.key_index("FADE_TABLE") else {
+                continue;
+            };
+            let values = parse_values(&entry.value);
+            if let [red, green, blue] = values.as_slice() {
+                fade_colors.insert(
+                    index as i32,
+                    [
+                        (*red).clamp(0, 255) as u8,
+                        (*green).clamp(0, 255) as u8,
+                        (*blue).clamp(0, 255) as u8,
+                    ],
+                );
+            }
+        }
         Self {
             effects,
             colors,
+            fade_colors,
+            default_fade_microseconds: gameexe
+                .get_value("FADE_TIME")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(40)
+                .saturating_mul(1_000),
             message_position: pair(gameexe, "WINDOW_MSG_POS", [0, 0]),
             message_font_size: pair(gameexe, "MSG_MOJI_SIZE", [16, 24]),
         }
@@ -82,6 +110,14 @@ impl Avg32Config {
 
     pub fn color(&self, index: i32) -> [u8; 3] {
         self.colors.get(&index).copied().unwrap_or([255, 255, 255])
+    }
+
+    pub fn fade_color(&self, index: i32) -> [u8; 3] {
+        self.fade_colors.get(&index).copied().unwrap_or([0, 0, 0])
+    }
+
+    pub const fn default_fade_microseconds(&self) -> u32 {
+        self.default_fade_microseconds
     }
 
     pub const fn message_position(&self) -> [i32; 2] {

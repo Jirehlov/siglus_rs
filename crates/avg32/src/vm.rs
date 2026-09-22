@@ -51,11 +51,23 @@ pub enum Input {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioKind {
-    Bgm { looped: bool },
-    Wave { looped: bool, channel: Option<i32> },
-    Voice { wait: bool },
+    Bgm {
+        looped: bool,
+        wait: bool,
+    },
+    Wave {
+        looped: bool,
+        wait: bool,
+        channel: Option<i32>,
+    },
+    Voice {
+        wait: bool,
+    },
     Effect,
-    Movie { looped: bool, wait: bool },
+    Movie {
+        looped: bool,
+        wait: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +86,11 @@ pub enum VmAction {
         color: Option<[i32; 3]>,
         microseconds: Option<u32>,
     },
+    Flash {
+        color: [i32; 3],
+        microseconds: u32,
+        repetitions: u32,
+    },
     WaitForInput {
         clears_text: bool,
     },
@@ -90,6 +107,7 @@ pub enum VmAction {
         name: String,
         target: u32,
         effect: Option<i32>,
+        direct_effect: Option<DirectGraphicEffect>,
     },
     CompositeGraphic {
         base: GraphicSource,
@@ -102,6 +120,24 @@ pub enum VmAction {
         destination: u32,
         source_rect: [i32; 4],
         destination_xy: [i32; 2],
+        masked: bool,
+        color_key: Option<[i32; 3]>,
+    },
+    /// Draws a decimal value using consecutive glyph cells in a PDT buffer.
+    /// AVG32's `0x67:20..22` instructions use this for counters and status
+    /// displays; the least-significant digit is placed at the last requested
+    /// destination cell.
+    BufferDigits {
+        value: i32,
+        source: u32,
+        destination: u32,
+        glyph_origin: [i32; 2],
+        glyph_size: [i32; 2],
+        glyph_stride: [i32; 2],
+        destination_origin: [i32; 2],
+        destination_stride: [i32; 2],
+        count: i32,
+        zero_padded: bool,
         masked: bool,
         color_key: Option<[i32; 3]>,
     },
@@ -149,6 +185,18 @@ pub enum VmAction {
         source_rect: [i32; 4],
         destination_rect: [i32; 4],
     },
+    /// Timed crop-and-stretch effect (`0x64:32`).  Each step samples a
+    /// progressively smaller or larger source rectangle from a snapshot and
+    /// stretches it into one fixed destination rectangle.
+    BufferStretchTween {
+        source: u32,
+        destination: u32,
+        source_initial: [i32; 4],
+        source_final: [i32; 4],
+        destination_rect: [i32; 4],
+        steps: i32,
+        microseconds: i32,
+    },
     BufferScroll {
         source: u32,
         destination: u32,
@@ -180,7 +228,11 @@ pub enum VmAction {
     },
     StopAnimation {
         name: Option<String>,
-        scene: Option<u32>,
+        /// Each value stops that one scene's multi-animation item (matches
+        /// the reference's per-value `MultiAnimationStop(buf, idx)` loop);
+        /// an empty list stops nothing, matching a bytecode payload with no
+        /// values at all rather than "every scene".
+        scenes: Vec<u32>,
         clear_all: bool,
     },
     SaveRequest {
@@ -211,6 +263,20 @@ pub enum VmAction {
         items: Vec<String>,
     },
     End,
+}
+
+/// Inline (`0x0b:02/04/06`) AVG32 effect descriptor.  It uses the same
+/// source/destination geometry as `GAMEEXE.INI` SEL presets but embeds the
+/// timing and pattern fields in the scenario bytecode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectGraphicEffect {
+    pub source_rect: [i32; 4],
+    pub destination: [i32; 2],
+    pub microseconds: i32,
+    pub command: i32,
+    pub mask: i32,
+    pub arguments: [i32; 5],
+    pub steps: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,6 +451,20 @@ pub struct Avg32Vm {
     pc: usize,
     last_opcode_pc: usize,
     flags: VmFlags,
+    /// Same-scene subroutine return addresses (opcode `0x1b` call / `0x20:1`
+    /// return). AVG32's real engine keeps ONE unified stack of
+    /// `(scene, position)` pairs shared with cross-scene gosub/return
+    /// (`0x16` non-goto / `0x20:2`, tracked separately as
+    /// `Avg32Runtime::scene_stack`) — confirmed against the recovered
+    /// reference decoder's `PushStack`/`PopStack` calls in both `d0d` (0x16)
+    /// and `d12` (0x1b). Splitting the stack here means `0x20:3` ("discard
+    /// top") and `0x20:6` ("clear") only ever affect same-scene call
+    /// history: a script that gosubs cross-scene and then discards/clears
+    /// instead of normally returning would leak (or desync the order of)
+    /// `scene_stack` entries. Unconfirmed against any real game — AIR's
+    /// SWEEP regression tool doesn't thread actual gosub/return sequences
+    /// across scenes — so this is a known, real gap, not a guess, but
+    /// merging the two stacks is a bigger refactor than a quick audit fix.
     call_stack: Vec<usize>,
     waiting: Option<VmAction>,
     wait_started: Option<Instant>,
@@ -417,6 +497,11 @@ pub struct Avg32Vm {
     selection_cancel: i32,
     skip_enabled: bool,
     ended: bool,
+    /// State for AVG32's `Rand()` opcodes (`0x56`/`0x57`).  Defaulting to a
+    /// fixed constant keeps the interpreter's state deterministic (see the
+    /// module docs); a frontend that wants true per-run randomness can call
+    /// [`Avg32Vm::seed_rng`] once after construction.
+    rng: u64,
 }
 
 impl Avg32Vm {
@@ -456,6 +541,7 @@ impl Avg32Vm {
             selection_cancel: 0,
             skip_enabled: true,
             ended: false,
+            rng: 0x853c_49e6_748f_ea9b,
         }
     }
 
@@ -463,6 +549,31 @@ impl Avg32Vm {
     pub fn with_extended_text(mut self) -> Self {
         self.extended_text = true;
         self
+    }
+
+    /// Reseeds the `Rand()` opcode state. The interpreter otherwise starts
+    /// every VM from the same fixed seed to keep its state deterministic;
+    /// call this once after construction for a frontend that wants
+    /// per-session variety (e.g. seeding from wall-clock time).
+    pub fn seed_rng(&mut self, seed: u64) {
+        self.rng = seed;
+    }
+
+    /// AVG32's `Rand(low, high)`: an inclusive range roll. Uses a splitmix64
+    /// step so consecutive rolls from the same seed still vary.
+    fn random_range(&mut self, low: i32, high: i32) -> i32 {
+        let (low, high) = if low <= high {
+            (low, high)
+        } else {
+            (high, low)
+        };
+        self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        let span = (i64::from(high) - i64::from(low) + 1).max(1) as u64;
+        low + (z % span) as i32
     }
 
     pub fn novel_mode(&self) -> bool {
@@ -479,6 +590,13 @@ impl Avg32Vm {
 
     pub fn replace_flags(&mut self, flags: VmFlags) {
         self.flags = flags;
+    }
+
+    /// Current `Rand()` opcode state, so a scene change can carry the
+    /// sequence forward into the freshly constructed VM instead of resetting
+    /// it back to the fixed default seed.
+    pub fn rng_state(&self) -> u64 {
+        self.rng
     }
 
     pub fn set_area_map(&mut self, map: AreaMap) {
@@ -760,6 +878,7 @@ impl Avg32Vm {
                     name,
                     target: 0,
                     effect: Some(effect),
+                    direct_effect: None,
                 }))
             }
             0x09 | 0x10 | 0x54 => {
@@ -769,18 +888,37 @@ impl Avg32Vm {
                     name,
                     target,
                     effect: None,
+                    direct_effect: None,
                 }))
             }
             0x02 | 0x04 | 0x06 => {
                 let name = self.scene_text()?;
-                // Geometry and transition parameters (the backend applies the effect).
-                for _ in 0..15 {
-                    self.value()?;
-                }
+                let source_rect = self.rect()?;
+                let destination = [self.value()?, self.value()?];
+                let microseconds = self.value()?;
+                let command = self.value()?;
+                let mask = self.value()?;
+                let arguments = [
+                    self.value()?,
+                    self.value()?,
+                    self.value()?,
+                    self.value()?,
+                    self.value()?,
+                ];
+                let steps = self.value()?;
                 Ok(Some(VmAction::LoadGraphic {
                     name,
                     target: 0,
                     effect: None,
+                    direct_effect: Some(DirectGraphicEffect {
+                        source_rect,
+                        destination,
+                        microseconds,
+                        command,
+                        mask,
+                        arguments,
+                        steps,
+                    }),
                 }))
             }
             0x08 | 0x13 => Ok(None),
@@ -821,12 +959,39 @@ impl Avg32Vm {
                     layers,
                 }))
             }
-            0x30 => Ok(Some(VmAction::ClearGraphicBuffers)),
-            0x31 | 0x32 | 0x33 | 0x52 => {
+            // These three are actually the *macro cache* family (`ClearMacro`
+            // / `DeleteMacro(idx)` / `SetVal(idx, GetMacroNum())`), unrelated
+            // to the PDT display-buffer bank despite `0x30`'s superficial
+            // resemblance to a "clear graphics" command. We don't model
+            // AVG32's macro cache, so there is nothing to clear or delete;
+            // `0x33`'s destination flag gets a defined "no macros" value
+            // instead of being left holding an unrelated flag's stale value.
+            0x30 => Ok(None),
+            0x31 | 0x32 => {
                 self.value()?;
                 Ok(None)
             }
-            0x50 => Ok(None),
+            0x33 => {
+                let index = self.raw_value_index()?;
+                self.flags.set_value(index, 0);
+                Ok(None)
+            }
+            // The engine has a dedicated hidden PDT slot for save-and-restore
+            // transitions.  It is slot 27 in the fixed 32-buffer AVG32 bank
+            // (`HIDEPDT = MAXPDT - 5`), not an ephemeral frontend snapshot.
+            0x50 => Ok(Some(VmAction::BufferCopy {
+                source: 0,
+                destination: 27,
+                source_rect: [0, 0, 639, 479],
+                destination_xy: [0, 0],
+                masked: false,
+                color_key: None,
+            })),
+            0x52 => Ok(Some(VmAction::CompositeGraphic {
+                base: GraphicSource::Buffer(27),
+                effect: Some(self.value()?),
+                layers: Vec::new(),
+            })),
             _ => bail!("avg32: unsupported graphics subcommand {subcommand:#04x}"),
         }
     }
@@ -918,24 +1083,20 @@ impl Avg32Vm {
             }
             0x20 | 0x24 => {
                 let name = self.scene_text()?;
-                let scene = if self.peek()? == 0 {
-                    None
-                } else {
-                    Some(self.value()? as u32)
-                };
+                let mut scenes = Vec::new();
                 while self.peek()? != 0 {
-                    self.value()?;
+                    scenes.push(self.value()? as u32);
                 }
                 self.byte()?;
                 Ok(Some(VmAction::StopAnimation {
                     name: Some(name),
-                    scene,
+                    scenes,
                     clear_all: false,
                 }))
             }
             0x21 | 0x25 => Ok(Some(VmAction::StopAnimation {
                 name: None,
-                scene: None,
+                scenes: Vec::new(),
                 clear_all: true,
             })),
             _ => bail!("avg32: unsupported animation subcommand {subcommand:#04x}"),
@@ -947,7 +1108,8 @@ impl Avg32Vm {
         let action = match subcommand {
             0x01..=0x03 => VmAction::PlayAudio {
                 kind: AudioKind::Bgm {
-                    looped: subcommand != 0x03,
+                    looped: subcommand == 0x01,
+                    wait: subcommand == 0x02,
                 },
                 name: self.scene_text()?,
             },
@@ -956,7 +1118,8 @@ impl Avg32Vm {
                 self.value()?;
                 VmAction::PlayAudio {
                     kind: AudioKind::Bgm {
-                        looped: subcommand != 0x07,
+                        looped: subcommand == 0x05,
+                        wait: subcommand == 0x06,
                     },
                     name,
                 }
@@ -964,12 +1127,18 @@ impl Avg32Vm {
             0x10 => {
                 self.value()?;
                 VmAction::StopAudio {
-                    kind: AudioKind::Bgm { looped: false },
+                    kind: AudioKind::Bgm {
+                        looped: false,
+                        wait: false,
+                    },
                     channel: None,
                 }
             }
             0x11 | 0x12 | 0x16 => VmAction::StopAudio {
-                kind: AudioKind::Bgm { looped: false },
+                kind: AudioKind::Bgm {
+                    looped: false,
+                    wait: false,
+                },
                 channel: None,
             },
             0x20 | 0x21 => VmAction::PlayAudio {
@@ -993,6 +1162,7 @@ impl Avg32Vm {
                 VmAction::PlayAudio {
                     kind: AudioKind::Wave {
                         looped: matches!(subcommand, 0x32 | 0x33),
+                        wait: matches!(subcommand, 0x34 | 0x35),
                         channel,
                     },
                     name,
@@ -1001,6 +1171,7 @@ impl Avg32Vm {
             0x36 | 0x38 => VmAction::StopAudio {
                 kind: AudioKind::Wave {
                     looped: false,
+                    wait: false,
                     channel: None,
                 },
                 channel: None,
@@ -1010,6 +1181,7 @@ impl Avg32Vm {
                 VmAction::StopAudio {
                     kind: AudioKind::Wave {
                         looped: false,
+                        wait: false,
                         channel: Some(channel),
                     },
                     channel: Some(channel),
@@ -1045,11 +1217,11 @@ impl Avg32Vm {
         let subcommand = self.byte()?;
         Ok(match subcommand {
             1 | 4 => Some(VmAction::Wait {
-                microseconds: self.value()? as u32,
+                microseconds: self.duration_microseconds()?,
                 cancellable_flag: None,
             }),
             2 | 5 => {
-                let microseconds = self.value()? as u32;
+                let microseconds = self.duration_microseconds()?;
                 let flag = self.value()? as u32;
                 Some(VmAction::Wait {
                     microseconds,
@@ -1097,7 +1269,7 @@ impl Avg32Vm {
             2 => VmAction::Fade {
                 pattern: Some(self.value()?),
                 color: None,
-                microseconds: Some(self.value()? as u32),
+                microseconds: Some(self.duration_microseconds()?),
             },
             3 => VmAction::Fade {
                 pattern: None,
@@ -1107,7 +1279,7 @@ impl Avg32Vm {
             4 => VmAction::Fade {
                 pattern: None,
                 color: Some([self.value()?, self.value()?, self.value()?]),
-                microseconds: Some(self.value()? as u32),
+                microseconds: Some(self.duration_microseconds()?),
             },
             0x10 => VmAction::Fade {
                 pattern: Some(self.value()?),
@@ -1244,9 +1416,8 @@ impl Avg32Vm {
     fn flags_operation(&mut self, opcode: u8) -> Result<()> {
         let index = self.raw_value_index()?;
         if opcode == 0x56 {
-            // The original command writes a random bit.  The deterministic core
-            // chooses false; a frontend can seed this state before executing.
-            self.flags.set_bit(index, false);
+            let bit = self.random_range(0, 1) != 0;
+            self.flags.set_bit(index, bit);
             return Ok(());
         }
         let value = self.value()?;
@@ -1321,7 +1492,12 @@ impl Avg32Vm {
                 index,
                 self.flags.value(index) ^ self.flags.value(value as u32),
             ),
-            0x57 => self.flags.set_bit(index, value != 0),
+            // `0x57` has a third operand: `Val[idx] = Rand(data, rnd)`.
+            0x57 => {
+                let high = self.value()?;
+                let roll = self.random_range(value, high);
+                self.flags.set_value(index, roll);
+            }
             _ => unreachable!("opcode filter above is exhaustive"),
         }
         Ok(())
@@ -1351,8 +1527,13 @@ impl Avg32Vm {
                     items,
                 }))
             }
+            // Opens the OS/UI load-menu and stores which slot (if any) the
+            // player picked. There is no interactive load-menu frontend
+            // modelled here, so the destination gets a defined "cancelled /
+            // nothing picked" sentinel instead of being left untouched.
             4 => {
-                self.value()?;
+                let destination = self.raw_value_index()?;
+                self.flags.set_value(destination, -1);
                 Ok(None)
             }
             _ => bail!("avg32: unsupported choice subcommand {subcommand:#04x}"),
@@ -1429,7 +1610,10 @@ impl Avg32Vm {
     fn set_multi(&mut self) -> Result<()> {
         let subcommand = self.byte()?;
         let start = self.raw_value_index()?;
-        let end = self.raw_value_index()?;
+        // AVG32's flag table tops out at 2000 entries; the original decoder
+        // clamps a caller-supplied end index down to the last valid slot
+        // rather than reading/writing past it.
+        let end = self.raw_value_index()?.min(1999);
         let value = self.value()?;
         match subcommand {
             1 => {
@@ -1499,11 +1683,16 @@ impl Avg32Vm {
     fn system_value(&mut self) -> Result<()> {
         let subcommand = self.byte()?;
         let destination = self.raw_value_index()?;
+        // Matches `SYSTEM::GetDateTime` exactly: 1 and 2 are packed
+        // two-field values (month/day, hour/minute), not the field alone;
+        // 3 is a raw `tm_year` (years since 1900); 4 is `tm_wday`
+        // (0 = Sunday), not the day-of-month.
+        let now = chrono::Local::now();
         let value = match subcommand {
-            1 => chrono::Local::now().year(),
-            2 => chrono::Local::now().month() as i32,
-            3 => chrono::Local::now().day() as i32,
-            4 => chrono::Local::now().hour() as i32,
+            1 => now.month() as i32 * 100 + now.day() as i32,
+            2 => now.hour() as i32 * 100 + now.minute() as i32,
+            3 => now.year() - 1900,
+            4 => now.weekday().num_days_from_sunday() as i32,
             0x10 => 0, // Runtime supplies the active scene number through save metadata.
             _ => bail!("avg32: unsupported system-value subcommand {subcommand:#04x}"),
         };
@@ -1718,6 +1907,19 @@ impl Avg32Vm {
     fn mouse_control(&mut self) -> Result<Option<VmAction>> {
         let subcommand = self.byte()?;
         match subcommand {
+            // The reference decoder's subcommand 2 is a true non-blocking
+            // poll (it always has a live cursor position to report, since
+            // its host event loop returns to the OS message pump between
+            // every `Decode()` call). This interpreter instead runs many
+            // instructions per `run()` before yielding, and only learns of
+            // pointer state from discrete click events fed in from outside
+            // — so a script polling subcommand 2 in a tight loop while
+            // waiting for a click would spin through thousands of
+            // instructions without ever yielding if this returned
+            // immediately. Deliberately treating 1 and 2 alike (block until
+            // a pointer event arrives) is the correct adaptation here, not a
+            // bug: confirmed by reverting this once and regressing 12 real
+            // AIR scenes to instruction-limit timeouts.
             1 | 2 => {
                 let x_destination = self.raw_value_index()?;
                 let y_destination = self.raw_value_index()?;
@@ -1728,11 +1930,6 @@ impl Avg32Vm {
                     self.flags.set_value(button_destination, button);
                     Ok(None)
                 } else {
-                    // AVG32's event loop yields after both its blocking and
-                    // polling forms.  In a run-to-yield interpreter, letting
-                    // the polling form spin through its backward branch would
-                    // starve the host UI, so retain its destinations and wake
-                    // only when the frontend supplies a pointer event.
                     self.pointer_wait_destinations =
                         Some([x_destination, y_destination, button_destination]);
                     Ok(Some(VmAction::WaitForPointer))
@@ -1777,10 +1974,18 @@ impl Avg32Vm {
                 // ARD hit-testing belongs to the input frontend.  Until it has
                 // supplied a pointer hit, AVG32 reports no selected area.
                 let button = self.pointer.map_or(0, |(_, _, button)| button);
-                let area = self.area_at(
-                    self.pointer.map_or(0, |(x, _, _)| x),
-                    self.pointer.map_or(0, |(_, y, _)| y),
-                );
+                // Subcommand 4 only reports the real hit area while no
+                // button is down (matching the reference decoder's own
+                // uncertain-but-explicit `flag==0` gate); subcommand 5
+                // reports it unconditionally.
+                let area = if subcommand == 4 && button != 0 {
+                    0
+                } else {
+                    self.area_at(
+                        self.pointer.map_or(0, |(x, _, _)| x),
+                        self.pointer.map_or(0, |(_, y, _)| y),
+                    )
+                };
                 self.flags.set_value(area_destination, area);
                 self.flags.set_value(
                     button_destination,
@@ -1975,23 +2180,44 @@ impl Avg32Vm {
                     color_key: None,
                 })
             }
-            0x20 => {
-                for _ in 0..15 {
-                    self.value()?;
-                }
-                None
-            }
-            0x21 => {
-                for _ in 0..16 {
-                    self.value()?;
-                }
-                None
-            }
-            0x22 => {
-                for _ in 0..18 {
-                    self.value()?;
-                }
-                None
+            0x20..=0x22 => {
+                // The first operand is deliberately a *variable number*, not
+                // the number to draw.  Original AVG32 performs `GetVal` on
+                // this decoded operand, then extracts digits right-to-left.
+                let value_index = self.value()?;
+                let value = self.flags.value(value_index.max(0) as u32);
+                let glyph_origin = [self.value()?, self.value()?];
+                let glyph_size = [self.value()?, self.value()?];
+                let glyph_stride = [self.value()?, self.value()?];
+                let source = pdt_index(self.value()?, 0);
+                let destination_origin = [self.value()?, self.value()?];
+                let destination_stride = [self.value()?, self.value()?];
+                let count = self.value()?;
+                let zero_padded = self.value()? != 0;
+                let destination = pdt_index(self.value()?, source);
+                let (masked, color_key) = match subcommand {
+                    0x20 => (false, None),
+                    0x21 => {
+                        self.value()?; // MaskCopy opacity/update flag.
+                        (true, None)
+                    }
+                    0x22 => (false, Some([self.value()?, self.value()?, self.value()?])),
+                    _ => unreachable!("matched by 0x20..=0x22"),
+                };
+                Some(VmAction::BufferDigits {
+                    value,
+                    source,
+                    destination,
+                    glyph_origin,
+                    glyph_size,
+                    glyph_stride,
+                    destination_origin,
+                    destination_stride,
+                    count,
+                    zero_padded,
+                    masked,
+                    color_key,
+                })
             }
             subcommand => bail!("avg32: unsupported graphics-copy subcommand {subcommand:#04x}"),
         };
@@ -2015,11 +2241,11 @@ impl Avg32Vm {
             0x10 => {
                 let color = [self.value()?, self.value()?, self.value()?];
                 let microseconds = self.value()?.max(0) as u32;
-                self.value()?; // flash repetition count; frontend presents final flash colour.
-                Ok(Some(VmAction::Fade {
-                    pattern: None,
-                    color: Some(color),
-                    microseconds: Some(microseconds),
+                let repetitions = self.value()?.max(0) as u32;
+                Ok(Some(VmAction::Flash {
+                    color,
+                    microseconds,
+                    repetitions,
                 }))
             }
             subcommand => bail!("avg32: unsupported graphics-special subcommand {subcommand:#04x}"),
@@ -2113,10 +2339,22 @@ impl Avg32Vm {
                 }))
             }
             0x32 => {
-                for _ in 0..15 {
-                    self.value()?;
-                }
-                Ok(None)
+                let source_initial = self.rect()?;
+                let source_final = self.rect()?;
+                let source = pdt_index(self.value()?, 0);
+                let destination_rect = self.rect()?;
+                let destination = pdt_index(self.value()?, source);
+                let steps = self.value()?;
+                let microseconds = self.value()?;
+                Ok(Some(VmAction::BufferStretchTween {
+                    source,
+                    destination,
+                    source_initial,
+                    source_final,
+                    destination_rect,
+                    steps,
+                    microseconds,
+                }))
             }
             subcommand => bail!("avg32: unsupported graphics-region subcommand {subcommand:#04x}"),
         }
@@ -2425,6 +2663,12 @@ impl Avg32Vm {
             ValueKind::Constant => raw.value as i32,
             ValueKind::Variable => self.flags.value(raw.value),
         })
+    }
+
+    /// Scenario time operands are milliseconds.  The scheduler stores them
+    /// as microseconds so a frame backend can use one consistent resolution.
+    fn duration_microseconds(&mut self) -> Result<u32> {
+        Ok((self.value()?.max(0) as u32).saturating_mul(1_000))
     }
 
     fn raw_value_index(&mut self) -> Result<u32> {
